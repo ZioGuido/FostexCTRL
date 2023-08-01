@@ -10,7 +10,7 @@
 // was depresset on the LRC.
 //
 // Code by: Guido Scognamiglio - www.GenuineSoundware.com
-// Last update: Jult 2023
+// Last update: July 2023
 //
 // Based on Arduino Leonardo (AT32u4) or clones. Can work with other CPU boards.
 //
@@ -39,8 +39,9 @@ USBMIDI_CREATE_INSTANCE(0, USB_MIDI)
 #define MMC_REC		0x06
 
 // Tape counter variables
-volatile int PulseCount = 0;
+volatile int64_t PulseCount = 0;
 int Direction = 0, SearchDirection = 0; // 1 = FORWARD, -1 = BACKWARD
+int64_t LocateMemory[4], LocateDestination = 0;
 
 // Alesis LRC reading variables
 int prevLRC_value = 0;
@@ -48,7 +49,6 @@ auto LRC_Timer = millis();
 
 enum LRC_Buttons { IDLE = 0, PLAY, STOP, RECORD, REWIND, FFWD, LOCATE1, LOCATE2, LOCATE3, LOCATE4, SETLOCATE, AUTOLOOP, AUTORECORD, REHARSE };
 int LRC_Button = 0;
-int LocateMemory[4], LocateDestination = 0;
 bool Searching = false;
 auto WindTimer = millis();
 
@@ -138,7 +138,7 @@ void SetLocate(byte loc)
 	case 3: LRC_Button = LRC_Buttons::LOCATE4; LocateMemory[3] = PulseCount; break;
 	}
 
-	Serial.print("Set Locate "); Serial.print(loc); Serial.print(" at position "); Serial.println(PulseCount);
+	//Serial.print("Set Locate "); Serial.print(loc); Serial.print(" at position "); Serial.println(PulseCount);
 }
 
 void Locate(int position)
@@ -149,7 +149,7 @@ void Locate(int position)
 	Searching = true;
 	LocateDestination = position;
 
-	Serial.print("Locate at position "); Serial.println(LocateDestination);
+	//Serial.print("Locate at position "); Serial.println(LocateDestination);
 
 	AllHigh();
 	SearchDirection = (LocateDestination > PulseCount) ? 1 : -1;
@@ -256,7 +256,7 @@ void loop()
 		{
 			PulseOut(PIN_STOP);
 			delay(50);
-			Serial.print("Was searching: "); Serial.print(LocateDestination); Serial.print(" Found: "); Serial.println(PulseCount);
+			//Serial.print("Was searching: "); Serial.print(LocateDestination); Serial.print(" Found: "); Serial.println(PulseCount);
 			Searching = false;
 			PulseCount = LocateDestination;
 		}
