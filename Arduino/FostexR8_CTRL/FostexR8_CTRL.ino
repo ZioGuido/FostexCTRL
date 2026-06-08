@@ -10,7 +10,7 @@
 // was depresset on the LRC.
 //
 // Code by: Guido Scognamiglio - www.GenuineSoundware.com
-// Last update: July 2023
+// Last update: June 2026
 //
 // Based on Arduino Leonardo (AT32u4) or clones. Can work with other CPU boards.
 //
@@ -38,8 +38,11 @@ USBMIDI_CREATE_INSTANCE(0, USB_MIDI)
 #define MMC_REW		0x05
 #define MMC_REC		0x06
 
-// Tape counter variables
+// Tape counter variables: store position and read speed
 volatile int64_t PulseCount = 0;
+volatile uint32_t lastPulseMicros = 0;
+volatile uint32_t pulsePeriod = 0;
+
 int Direction = 0, SearchDirection = 0; // 1 = FORWARD, -1 = BACKWARD
 int64_t LocateMemory[4], LocateDestination = 0;
 
@@ -50,12 +53,37 @@ auto LRC_Timer = millis();
 enum LRC_Buttons { IDLE = 0, PLAY, STOP, RECORD, REWIND, FFWD, LOCATE1, LOCATE2, LOCATE3, LOCATE4, SETLOCATE, AUTOLOOP, AUTORECORD, REHARSE };
 int LRC_Button = 0;
 bool Searching = false;
-auto WindTimer = millis();
 
+#define TestMargin(test_val, ref_val, margin) (test_val > ref_val - margin && test_val < ref_val + margin)
 
-bool TestMargin(int test_val, int ref_val, int margin)
+void AllHigh()
 {
-	return (test_val > ref_val - margin && test_val < ref_val + margin);
+	digitalWrite(PIN_PLAY, HIGH);
+	digitalWrite(PIN_FF, HIGH);
+	digitalWrite(PIN_STOP, HIGH);
+	digitalWrite(PIN_REW, HIGH);
+	digitalWrite(PIN_REC, HIGH);
+	digitalWrite(PIN_LIFTER, HIGH);
+}
+
+void PulseOut(byte pin, int postDelay = 50)
+{
+	AllHigh();
+	digitalWrite(pin, LOW);
+	delay(50);
+	digitalWrite(pin, HIGH);
+	delay(postDelay);
+}
+
+void PulseOutRec()
+{
+	// Press both PLAY & REC buttons to start recording armed tracks
+	AllHigh();
+	digitalWrite(PIN_REC, LOW);
+	digitalWrite(PIN_PLAY, LOW);
+	delay(50);
+	digitalWrite(PIN_REC, HIGH);
+	digitalWrite(PIN_PLAY, HIGH);
 }
 
 void DoLRC(int value)
@@ -99,35 +127,6 @@ void ReadLRC()
 	}
 }
 
-void AllHigh()
-{
-	digitalWrite(PIN_PLAY,	HIGH);
-	digitalWrite(PIN_FF,	HIGH);
-	digitalWrite(PIN_STOP,	HIGH);
-	digitalWrite(PIN_REW,	HIGH);
-	digitalWrite(PIN_REC,	HIGH);
-	digitalWrite(PIN_LIFTER,HIGH);
-}
-
-void PulseOut(byte pin)
-{
-	AllHigh();
-	digitalWrite(pin, LOW);
-	delay(50);
-	digitalWrite(pin, HIGH);
-}
-
-void PulseOutRec()
-{
-	// Press both PLAY & REC buttons to start recording armed tracks
-	AllHigh();
-	digitalWrite(PIN_REC,	LOW);
-	digitalWrite(PIN_PLAY,	LOW);
-	delay(50);
-	digitalWrite(PIN_REC,	HIGH);
-	digitalWrite(PIN_PLAY,	HIGH);
-}
-
 void SetLocate(byte loc)
 {
 	switch (loc)
@@ -148,12 +147,11 @@ void Locate(int position)
 
 	Searching = true;
 	LocateDestination = position;
-
+	SearchDirection = (LocateDestination > PulseCount) ? 1 : -1;
 	//Serial.print("Locate at position "); Serial.println(LocateDestination);
 
-	AllHigh();
-	SearchDirection = (LocateDestination > PulseCount) ? 1 : -1;
-	digitalWrite((SearchDirection > 0) ? PIN_FF : PIN_REW, LOW);
+	auto DirectionPin = (SearchDirection > 0) ? PIN_FF : PIN_REW;
+	PulseOut(DirectionPin);
 }
 
 void PauseSearch()
@@ -184,6 +182,10 @@ void handleSystemExclusive(byte* array, unsigned size)
 
 void GetPulse() // ISR
 {
+	uint32_t now = micros();
+	pulsePeriod = now - lastPulseMicros;
+	lastPulseMicros = now;
+
 	PulseCount += Direction;
 }
 
@@ -200,7 +202,7 @@ void setup()
 
 	AllHigh();
 
-	pinMode(PIN_PULSE, INPUT_PULLUP);
+	pinMode(PIN_PULSE,	INPUT_PULLUP);
 	pinMode(PIN_UD,		INPUT_PULLUP);
 
 	// Setup MIDI
@@ -237,28 +239,36 @@ void loop()
 	// Locate and stop when reached destination
 	if (Searching)
 	{
+		// Get current speed
+		uint32_t p;
+		noInterrupts();
+		p = pulsePeriod;
+		interrupts();
+
+		float ips = (p > 0) ? (1e6f / p) : 0.f; // Impulses per second
+		int64_t dist = abs(LocateDestination - PulseCount);
+		
+		// Dynamic braking distance according to speed
+		int brakingDistance = (int)(ips * 1.2f); // Adjust to your liking
+
 		// Slow down when approaching destination
-		if (abs(LocateDestination - PulseCount) < 250)
+		if (dist > 20 && dist < brakingDistance)
 		{
 			// There's no way to ask the R8 to slow down like when keeping FF or RWD depressed on its own controller
-			// so slowing down is achieved by pulsating the other direction wind button until the destination is reached
+			// so slowing down is achieved by alternating search buttons until the destination is reached
+			auto DirectionPin = (SearchDirection > 0) ? PIN_FF : PIN_REW;
 			auto oppositeDirectionPin = (SearchDirection > 0) ? PIN_REW : PIN_FF;
-			if (millis() - WindTimer > 400)
-			{
-				WindTimer = millis();
-				digitalWrite(oppositeDirectionPin, !digitalRead(oppositeDirectionPin));
-				//Serial.print("PULSATING SLOW DOWN PIN: "); Serial.print(oppositeDirectionPin); Serial.print(" STATE: "); Serial.println(digitalRead(oppositeDirectionPin));
-			}
+		
+			PulseOut(oppositeDirectionPin, dist / 2); // Adjust brake time
+			PulseOut(DirectionPin);
 		}
 
 		// Stop when destination is reached
-		if ((SearchDirection > 0 && PulseCount >= LocateDestination) || (SearchDirection < 0 && PulseCount <= LocateDestination))
+		if (TestMargin(PulseCount, LocateDestination, 2))
 		{
-			PulseOut(PIN_STOP);
-			delay(50);
-			//Serial.print("Was searching: "); Serial.print(LocateDestination); Serial.print(" Found: "); Serial.println(PulseCount);
 			Searching = false;
 			PulseCount = LocateDestination;
+			PulseOut(PIN_STOP);
 		}
 	}
 }
